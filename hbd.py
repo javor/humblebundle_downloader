@@ -618,6 +618,14 @@ def _digest(path: pathlib.Path, algo: str) -> Digest:
 # cli interface
 
 
+def pr(cfg, message):
+    click.echo(message, nl=False, **cfg)
+
+
+def nl():
+    click.echo()
+
+
 @click.group()
 def cli(): ...
 
@@ -667,96 +675,122 @@ def cli_download(*args, dry_run, **kwargs):
 
 
 @with_error_handling
-def _cli_download_dry_run(work_dir, torrent, order_ids, **_kwargs):
+def _cli_download_dry_run(work_dir, torrent, no_color, order_ids, **_kwargs):
+
+    print_text = functools.partial(pr, {"color": not no_color})
+
+    print_text("--- Dry Run: Downloading Files ---")
+
+    nl()
+
+    for command, info, first in _cli_download_gen(order_ids, work_dir, torrent):
+
+        nl() if not first else ...
+
+        print_text(info)
+
+        nl()
+
+    print_text("--- Dry Run Completed ---")
+
+    nl()
+
+
+def _cli_download_gen(order_ids, work_dir, torrent):
 
     orders = local_order_gen().with_ids(order_ids)
 
-    click.echo("--- Dry Run: Downloading Files ---")
+    i_max = len(orders)
 
-    for order in orders:
+    for i, order in enumerate(orders):
 
-        contents = []
+        commands = transfer_command_gen(
+            order,
+            work_dir=work_dir,
+            torrent_file=torrent,
+        )
 
-        commands = transfer_command_gen(order, work_dir=work_dir, torrent_file=torrent)
+        commands = sorted(
+            commands,
+            key=lambda x: len(x.source_link.url),
+            reverse=True,
+        )
 
-        commands = sorted(commands, key=lambda x: len(x.source_link.url), reverse=True)
+        j_max = len(commands)
 
-        commands = list(commands)
+        for j, command in enumerate(commands):
 
-        for command in commands:
-
-            contents.append(
-                f"Downloading: {command.source_link.url}\n"
-                f"to: '{command.target_file.absolute()}'\n"
+            _product = click.style(
+                command.metadata.product_name,
+                **{"fg": "green"},
             )
 
-        click.echo("\n".join(contents), nl=False)
+            _subproduct = click.style(
+                command.metadata.subproduct_name,
+                **{"fg": "blue"},
+            )
 
-    click.echo("--- Dry Run Completed ---")
+            info = (
+                f"Product: {_product} ({i + 1}/{i_max})"
+                f" | "
+                f"Subproduct: {_subproduct} ({j + 1}/{j_max})"
+                f"\n"
+                f"from: {command.source_link.url}"
+                f"\n"
+                f"to: '{command.target_file.absolute()}'"
+            )
+
+            yield command, info, (i == j == 0)
 
 
 @with_error_handling
 def _cli_download(work_dir, verify, torrent, no_color, order_ids, **_kwargs):
 
-    echo_params = {"color": not no_color}
+    print_text = functools.partial(pr, {"color": not no_color})
 
-    orders = local_order_gen().with_ids(order_ids)
+    for command, info, first in _cli_download_gen(order_ids, work_dir, torrent):
 
-    number_of_orders = len(orders.ids)
+        nl() if not first else ...
 
-    for i, order in enumerate(orders):
+        print_text(info)
 
-        commands = transfer_command_gen(order, work_dir=work_dir, torrent_file=torrent)
+        nl()
 
-        commands = sorted(commands, key=lambda x: len(x.source_link.url), reverse=True)
+        print_text(f"Downloading... ")
 
-        commands = list(commands)
+        transfer_file(command)
 
-        number_of_commands = len(commands)
+        print_text(click.style("Done", fg="green"))
 
-        for j, command in enumerate(commands):
+        if verify:
+            print_text(" -> Verifying... ")
 
-            click.echo() if not (i == 0 and j == 0) else ...
+            _algo = command.source_link.digest.algo
+            _hash = command.source_link.digest.hash
 
-            click.echo(
-                f"Downloading "
-                f"({j+1}/{number_of_commands} | {i + 1}/{number_of_orders})"
-                f": "
-                f"{command.source_link.url}"
-                f" ",
-                nl=False,
-                **echo_params,
-            )
+            result = None
 
-            transfer_file(command)
+            if _algo:
+                result = _digest(command.target_file, _algo)
 
-            click.echo(click.style("Done", fg="green"), **echo_params)
+            if not result:
+                print_text(
+                    f"{click.style('Skipped', fg='yellow')}",
+                )
+            elif result.hash == _hash:
+                print_text(
+                    f"{click.style('Correct', fg='green')}",
+                )
+            else:
+                print_text(
+                    f"{click.style('Corrupt', fg='red')}"
+                    f" "
+                    f"('{_hash}' != '{result.hash}')",
+                )
 
-            if verify:
-                _algo = command.source_link.digest.algo
-                _hash = command.source_link.digest.hash
+            nl()
 
-                result = None
-                if _algo:
-                    result = _digest(command.target_file, _algo)
-
-                if not result:
-                    click.echo(
-                        f"Verifying: {click.style('Skipped', fg='yellow')}",
-                        **echo_params,
-                    )
-                elif result.hash == _hash:
-                    click.echo(
-                        f"Verifying: {click.style('Correct', fg='green')}",
-                        **echo_params,
-                    )
-                else:
-                    click.echo(
-                        f"Verifying: {click.style('Corrupt', fg='red')}"
-                        f" "
-                        f"('{_hash}' != '{result.hash}')",
-                        **echo_params,
-                    )
+        nl()
 
 
 @click.argument(
@@ -830,7 +864,7 @@ def cli_ls(*args, **kwargs):
 @with_error_handling
 def _cli_ls(human_readable, horizontal, no_color, no_label, order_ids, **_kwargs):
 
-    echo_params = {"color": not no_color}
+    print_text = functools.partial(pr, {"color": not no_color})
 
     def label(text):
         return "" if no_label else text
@@ -841,9 +875,7 @@ def _cli_ls(human_readable, horizontal, no_color, no_label, order_ids, **_kwargs
 
         contents = []
 
-        commands = list(transfer_command_gen(order))
-
-        for command in commands:
+        for command in transfer_command_gen(order):
 
             _id = click.style(
                 command.metadata.order_id,
@@ -896,9 +928,7 @@ def _cli_ls(human_readable, horizontal, no_color, no_label, order_ids, **_kwargs
                 # fmt: on
             )
 
-        click.echo(
-            f"{'' if horizontal else '\n'}".join(contents), nl=False, **echo_params
-        )
+        print_text(f"{'' if horizontal else '\n'}".join(contents))
 
 
 if __name__ == "__main__":
